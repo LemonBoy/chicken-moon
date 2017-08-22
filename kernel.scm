@@ -2,7 +2,7 @@
   ()
   (import scheme chicken)
 
-(use srfi-1 srfi-18 data-structures
+(use srfi-1 srfi-18 data-structures ports
      medea uuid matchable
      (prefix zmq zmq:)
      sha2 hmac string-utils)
@@ -122,6 +122,38 @@
         (make-jupyter-msg* msg "status"
           `((execution_state . "idle")))))))
 
+(define +exe-counter+ 1)
+
+(define (safe-eval form)
+  (handle-exceptions exn
+    (list #f ((condition-property-accessor 'exn 'message) exn))
+    (list #t (eval (with-input-from-string form read)))))
+
+(define (eval-form ctx reply-socket msg)
+  (let* ((content (jupyter-msg-content msg))
+         (silent? (alist-ref 'silent content))
+         (result (safe-eval (alist-ref 'code content))))
+    (send-message/multi reply-socket
+      (serialize-wire-msg ctx
+        (make-jupyter-msg* msg "execute_reply"
+          ; let's report the execution status only
+          `((status . ,(if (car result) "ok" "error"))
+            (execution_count . ,+exe-counter+)))))
+    ; publish the result on the IOPub channel unless asked to do otherwise
+    (unless silent?
+      (send-message/multi (context-iopub-socket ctx)
+        (serialize-wire-msg ctx
+          (if (car result)
+            (make-jupyter-msg* msg "execute_result"
+              `((execution_count . ,+exe-counter+)
+                (metadata . ())
+                (data . ((text/plain . ,(->string (cadr result)))))))
+            (make-jupyter-msg* msg "error"
+              `((ename . "exception")
+                (evalue . ,(cadr result))
+                (traceback . #("error during the evaluation")))))))
+      (set! +exe-counter+ (add1 +exe-counter+)))))
+
 (define (start-shell-thread! ctx which)
   (let* ((msg-socket (case which
                        ((shell) (context-shell-socket ctx))
@@ -164,11 +196,7 @@
                      (make-jupyter-msg* msg "is_complete_reply"
                        `((status . "unknown"))))))
                 ("execute_request"
-                  (send-message/multi msg-socket
-                    (serialize-wire-msg ctx
-                      (make-jupyter-msg* msg "execute_reply"
-                        `((status . "ok")
-                          (execution_count . 1))))))
+                 (eval-form ctx msg-socket msg))
                 (type
                   (print "Unhandled request: " type)))))
 
