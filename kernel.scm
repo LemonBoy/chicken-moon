@@ -3,7 +3,7 @@
   (import scheme chicken)
 
 (use srfi-1 srfi-18 data-structures
-     medea uuid
+     medea uuid matchable
      (prefix zmq zmq:)
      sha2 hmac string-utils)
 
@@ -114,7 +114,8 @@
         (make-jupyter-msg* msg "status"
           `((execution_state . "busy")))))
     ; execute the thunk
-    (thunk)
+    (let ((type (alist-ref 'msg_type (jupyter-msg-header msg))))
+      (thunk type))
     ; notify the frontend we're ready again
     (send-message/multi iopub-socket
       (serialize-wire-msg ctx
@@ -122,60 +123,56 @@
           `((execution_state . "idle")))))))
 
 (define (start-shell-thread! ctx which)
-  (let* ((iopub-socket (context-iopub-socket ctx))
-         (msg-socket (case which
-                         ((shell) (context-shell-socket ctx))
-                         ((control) (context-ctrl-socket ctx))
-                         (else (error "invalid socket selected" which))))
+  (let* ((msg-socket (case which
+                       ((shell) (context-shell-socket ctx))
+                       ((control) (context-ctrl-socket ctx))
+                       (else (error "invalid socket selected" which))))
          (fd (zmq:socket-fd msg-socket)))
     (thread-start!
       (lambda ()
         (let loop ()
           (thread-wait-for-i/o! fd)
 
-          (let* ((msg (parse-wire-msg ctx (receive-message/multi msg-socket)))
-                 (type (alist-ref 'msg_type (jupyter-msg-header msg))))
-            (print "recv msg " type)
-
+          (let ((msg (parse-wire-msg ctx (receive-message/multi msg-socket))))
             (call-with-notification ctx msg
-              (lambda ()
-                (when (string=? "kernel_info_request" type)
-                  (send-message/multi msg-socket
-                    (serialize-wire-msg ctx
-                      (make-jupyter-msg* msg "kernel_info_reply"
-                        `((protocol_version . "5.0")
-                          (implementation . "moon")
-                          (implementation_version . ,(chicken-version))
-                          (banner . "CHICKEN on Jupyter")
-                          (language_info .
-                                         ((name . "scheme")
-                                          (version . "4")
-                                          (mimetype . "text/plain")
-                                          (file_extension . "scm"))))))))
-                (when (string=? "shutdown_request" type)
-                  ; simply echo back the message content to let the front-end
-                  ; know we're ready to die
-                  (send-message/multi msg-socket
-                    (serialize-wire-msg ctx
-                      (make-jupyter-msg* msg "shutdown_reply"
-                        (jupyter-msg-content msg))))
-                  (print "goodbye...")
-                  (exit))
-                (when (string=? "is_complete_request" type)
-                  (print "completeness")
-                  (send-message/multi msg-socket
-                    (serialize-wire-msg ctx
-                      (make-jupyter-msg* msg "is_complete_reply"
-                        `((status . "unknown"))))))
-                (when (string=? "execute_request" type)
-                  (print "execute")
+              (match-lambda
+                ("kernel_info_request"
+                 (send-message/multi msg-socket
+                   (serialize-wire-msg ctx
+                     (make-jupyter-msg* msg "kernel_info_reply"
+                       `((protocol_version . "5.0")
+                         (implementation . "moon")
+                         (implementation_version . ,(chicken-version))
+                         (banner . "CHICKEN on Jupyter")
+                         (language_info .
+                                        ((name . "scheme")
+                                         (version . "4")
+                                         (mimetype . "text/plain")
+                                         (file_extension . "scm"))))))))
+                ("shutdown_request"
+                 ; simply echo back the message content to let the front-end
+                 ; know we're ready to die
+                 (send-message/multi msg-socket
+                   (serialize-wire-msg ctx
+                     (make-jupyter-msg* msg "shutdown_reply"
+                       (jupyter-msg-content msg))))
+                 (print "goodbye...")
+                 (exit))
+                ("is_complete_request"
+                 (send-message/multi msg-socket
+                   (serialize-wire-msg ctx
+                     (make-jupyter-msg* msg "is_complete_reply"
+                       `((status . "unknown"))))))
+                ("execute_request"
                   (send-message/multi msg-socket
                     (serialize-wire-msg ctx
                       (make-jupyter-msg* msg "execute_reply"
                         `((status . "ok")
-                          (execution_count . 1))))))))
+                          (execution_count . 1))))))
+                (type
+                  (print "Unhandled request: " type)))))
 
-            (loop)))))))
+          (loop))))))
 
 (define (make-context! config-path)
   (let* ((cfg (config->alist config-path))
