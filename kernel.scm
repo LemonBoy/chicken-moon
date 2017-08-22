@@ -1,6 +1,15 @@
+(module kernel
+  ()
+  (import scheme chicken)
+
 (use srfi-1 srfi-18 data-structures
-     medea zmq uuid
+     medea uuid
+     (prefix zmq zmq:)
      sha2 hmac string-utils)
+
+(define (string-null? s) (zero? (##sys#size s)))
+
+(define-record ccontext hb-socket shell-socket ctrl-socket iopub-socket hmac-fn)
 
 (define (config->alist file)
   (with-input-from-file file read-json))
@@ -17,32 +26,32 @@
   (apply values
     (map
       (lambda (ep typ)
-        (let ((s (make-socket typ)))
-          (bind-socket s (endpoint-address ep cfg))
+        (let ((s (zmq:make-socket typ)))
+          (zmq:bind-socket s (endpoint-address ep cfg))
           s))
-      '(hb_port shell_port)
-      '(rep xrep))))
+      '(hb_port shell_port control_port iopub_port)
+      '(rep xrep xrep pub))))
 
 (define (receive-message/multi socket)
-  (let loop ((msg (list (receive-message* socket))))
-    (if (socket-option socket 'rcvmore)
-        (loop (cons (receive-message* socket) msg))
+  (let loop ((msg (list (zmq:receive-message* socket))))
+    (if (zmq:socket-option socket 'rcvmore)
+        (loop (cons (zmq:receive-message* socket) msg))
         (reverse msg))))
 
 (define (send-message/multi socket msg)
   (let loop ((msg msg))
     (unless (null? msg)
-      (print (pair? (cdr msg)))
-      (send-message socket (car msg) #f (pair? (cdr msg)))
+      (zmq:send-message socket (car msg) send-more: (pair? (cdr msg)))
       (loop (cdr msg)))))
 
-(define (start-hb-thread! socket)
-  (let ((fd (socket-fd socket)))
+(define (start-hb-thread! ctx)
+  (let* ((hb-socket (ccontext-hb-socket ctx))
+         (fd (zmq:socket-fd hb-socket)))
     (thread-start!
       (lambda ()
         (let loop ()
           (thread-wait-for-i/o! fd)
-          (send-message socket (receive-message* socket))
+          (zmq:send-message hb-socket (zmq:receive-message* hb-socket))
           (loop))))))
 
 (define-record-type <jmsg>
@@ -54,12 +63,10 @@
   (meta jupyter-msg-meta)
   (content jupyter-msg-content))
 
-(define (parse-wire-msg msg key)
+(define (parse-wire-msg ctx msg)
   (let-values (((ids rest) (break! (cut string=? "<IDS|MSG>" <>) msg)))
-    (assert (not (null? ids)))
-
     ; XXX: Don't hash the raw data if present
-    (and-let* ((key)
+    (and-let* ((hmac-fn (ccontext-hmac-fn ctx))
                (sign (hmac-fn (apply string-append (cddr rest)))))
       (unless (string=? (string->hex sign) (second rest))
         (error "corrupted message")))
@@ -71,14 +78,15 @@
       (read-json (fifth rest))
       (read-json (sixth rest)))))
 
-(define (serialize-wire-msg msg key)
+(define (serialize-wire-msg ctx msg)
   (let* ((header  (json->string (jupyter-msg-header msg)))
          (parent  (json->string (jupyter-msg-parent msg)))
          (meta    (json->string (jupyter-msg-meta msg)))
          (content (json->string (jupyter-msg-content msg)))
-         (sign    (if key
-                      (hmac-fn (string-append header parent meta content))
-                      "")))
+         (hmac-fn (ccontext-hmac-fn ctx))
+         (sign    (if hmac-fn
+                    (hmac-fn (string-append header parent meta content))
+                    "")))
     `(,@(jupyter-msg-ids msg)
        "<IDS|MSG>"
        ,(string->hex sign)
@@ -98,19 +106,27 @@
       '()
       content)))
 
-(define (start-shell-thread! socket key)
-  (let ((fd (socket-fd socket)))
+(define (start-shell-thread! ctx)
+  (let* ((iopub-socket (ccontext-iopub-socket ctx))
+         (shell-socket (ccontext-shell-socket ctx))
+         (fd (zmq:socket-fd shell-socket)))
     (thread-start!
       (lambda ()
         (let loop ()
           (thread-wait-for-i/o! fd)
-          (let* ((msg (parse-wire-msg (receive-message/multi socket) key))
+
+          (let* ((msg (parse-wire-msg ctx (receive-message/multi shell-socket)))
                  (type (alist-ref 'msg_type (jupyter-msg-header msg))))
-            (print "Received " type)
+            (print "recv msg " type)
+
+            (send-message/multi iopub-socket
+              (serialize-wire-msg ctx
+                (make-jupyter-msg* msg "status"
+                  `((execution_state . "busy")))))
+
             (when (string=? "kernel_info_request" type)
-              (print "reply!")
-              (send-message/multi socket
-                (serialize-wire-msg
+              (send-message/multi shell-socket
+                (serialize-wire-msg ctx
                   (make-jupyter-msg* msg "kernel_info_reply"
                     `((protocol_version . "5.0")
                       (implementation . "moon")
@@ -120,29 +136,47 @@
                                      ((name . "scheme")
                                       (version . "4")
                                       (mimetype . "text/plain")
-                                      (file_extension . "scm")))))
-                  key)))
+                                      (file_extension . "scm"))))))))
+            (when (string=? "shutdown_request" type)
+              (print "goodbye...")
+              (exit))
+            (when (string=? "is_complete_request" type)
+              (print "completeness")
+              (send-message/multi shell-socket
+                (serialize-wire-msg ctx
+                  (make-jupyter-msg* msg "is_complete_reply"
+                    `((status . "unknown"))))))
+            (when (string=? "execute_request" type)
+              (print "execute")
+              (send-message/multi shell-socket
+                (serialize-wire-msg ctx
+                  (make-jupyter-msg* msg "execute_reply"
+                    `((status . "ok")
+                      (execution_count . 1))))))
+
+            (send-message/multi iopub-socket
+              (serialize-wire-msg ctx
+                (make-jupyter-msg* msg "status"
+                  `((execution_state . "idle")))))
+
             (loop)))))))
 
-(let* ((cfg (config->alist (car (command-line-arguments)))))
-  (set! hmac-fn (hmac (alist-ref 'key cfg) (sha256-primitive)))
+(define (make-context! config-path)
+  (let* ((cfg (config->alist config-path))
+         (key (alist-ref 'key cfg)))
+    ; bind the sockets
+    ; XXX: stdin is missing at the moment
+    (let-values (((hb shell ctrl iopub) (punch cfg)))
+      (make-ccontext
+        hb shell ctrl iopub
+        ; generate the hmac routine if the key is given
+        ; XXX: parse signature_scheme instead of hardcoding SHA256 as digest fn
+        (and (not (string-null? key)) (hmac key (sha256-primitive)))))))
 
-  (let-values (((hb shell) (punch cfg)))
-    (start-hb-thread! hb)
-    (start-shell-thread! shell (alist-ref 'key cfg)))
-
-  ; pub cannot be read?
-  #;(for-each
-    (lambda (s x)
-      (thread-start!
-        (lambda ()
-          (let loop ()
-            (thread-wait-for-i/o! (socket-fd s))
-            (print x #\: (receive-message/multi s))
-            (loop)))))
-    (cdddr socks) '(1 2 3))
+; XXX: handle signals?
+(let ((ctx (make-context! (car (command-line-arguments)))))
+  (start-hb-thread! ctx)
+  (start-shell-thread! ctx)
+  (print "loop...")
+  (thread-suspend! (current-thread)))
 )
-
-(print "wait")
-(thread-suspend! (current-thread))
-(print "after-wait")
