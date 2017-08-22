@@ -106,6 +106,21 @@
       '()
       content)))
 
+(define (call-with-notification ctx msg thunk)
+  (let ((iopub-socket (ccontext-iopub-socket ctx)))
+    ; notify the frontend we're executing the request
+    (send-message/multi iopub-socket
+      (serialize-wire-msg ctx
+        (make-jupyter-msg* msg "status"
+          `((execution_state . "busy")))))
+    ; execute the thunk
+    (thunk)
+    ; notify the frontend we're ready again
+    (send-message/multi iopub-socket
+      (serialize-wire-msg ctx
+        (make-jupyter-msg* msg "status"
+          `((execution_state . "idle")))))))
+
 (define (start-shell-thread! ctx)
   (let* ((iopub-socket (ccontext-iopub-socket ctx))
          (shell-socket (ccontext-shell-socket ctx))
@@ -119,45 +134,43 @@
                  (type (alist-ref 'msg_type (jupyter-msg-header msg))))
             (print "recv msg " type)
 
-            (send-message/multi iopub-socket
-              (serialize-wire-msg ctx
-                (make-jupyter-msg* msg "status"
-                  `((execution_state . "busy")))))
-
-            (when (string=? "kernel_info_request" type)
-              (send-message/multi shell-socket
-                (serialize-wire-msg ctx
-                  (make-jupyter-msg* msg "kernel_info_reply"
-                    `((protocol_version . "5.0")
-                      (implementation . "moon")
-                      (implementation_version . "0.1")
-                      (banner . "")
-                      (language_info .
-                                     ((name . "scheme")
-                                      (version . "4")
-                                      (mimetype . "text/plain")
-                                      (file_extension . "scm"))))))))
-            (when (string=? "shutdown_request" type)
-              (print "goodbye...")
-              (exit))
-            (when (string=? "is_complete_request" type)
-              (print "completeness")
-              (send-message/multi shell-socket
-                (serialize-wire-msg ctx
-                  (make-jupyter-msg* msg "is_complete_reply"
-                    `((status . "unknown"))))))
-            (when (string=? "execute_request" type)
-              (print "execute")
-              (send-message/multi shell-socket
-                (serialize-wire-msg ctx
-                  (make-jupyter-msg* msg "execute_reply"
-                    `((status . "ok")
-                      (execution_count . 1))))))
-
-            (send-message/multi iopub-socket
-              (serialize-wire-msg ctx
-                (make-jupyter-msg* msg "status"
-                  `((execution_state . "idle")))))
+            (call-with-notification ctx msg
+              (lambda ()
+                (when (string=? "kernel_info_request" type)
+                  (send-message/multi shell-socket
+                    (serialize-wire-msg ctx
+                      (make-jupyter-msg* msg "kernel_info_reply"
+                        `((protocol_version . "5.0")
+                          (implementation . "moon")
+                          (implementation_version . ,(chicken-version))
+                          (banner . "CHICKEN on Jupyter")
+                          (language_info .
+                                         ((name . "scheme")
+                                          (version . "4")
+                                          (mimetype . "text/plain")
+                                          (file_extension . "scm"))))))))
+                (when (string=? "shutdown_request" type)
+                  ; simply echo back the message content to let the front-end
+                  ; know we're ready to die
+                  (send-message/multi shell-socket
+                    (serialize-wire-msg ctx
+                      (make-jupyter-msg* msg "shutdown_reply"
+                        (jupyter-msg-content msg))))
+                  (print "goodbye...")
+                  (exit))
+                (when (string=? "is_complete_request" type)
+                  (print "completeness")
+                  (send-message/multi shell-socket
+                    (serialize-wire-msg ctx
+                      (make-jupyter-msg* msg "is_complete_reply"
+                        `((status . "unknown"))))))
+                (when (string=? "execute_request" type)
+                  (print "execute")
+                  (send-message/multi shell-socket
+                    (serialize-wire-msg ctx
+                      (make-jupyter-msg* msg "execute_reply"
+                        `((status . "ok")
+                          (execution_count . 1))))))))
 
             (loop)))))))
 
