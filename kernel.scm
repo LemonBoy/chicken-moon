@@ -148,7 +148,7 @@
                                         ((name . "scheme")
                                          (version . "4")
                                          (mimetype . "text/plain")
-                                         (file_extension . "scm"))))))))
+                                         (file_extension . ".scm"))))))))
                 ("shutdown_request"
                  ; simply echo back the message content to let the front-end
                  ; know we're ready to die
