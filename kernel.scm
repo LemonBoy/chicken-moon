@@ -125,25 +125,36 @@
 (define +exe-counter+ 1)
 
 (define (safe-eval form)
-  (handle-exceptions exn
-    (list #f ((condition-property-accessor 'exn 'message) exn))
-    (list #t (eval (with-input-from-string form read)))))
+  (let ((stdout (open-output-string))
+        (stderr (open-output-string)))
+    (handle-exceptions exn
+      (list #f (with-output-to-string
+                 (lambda ()
+                   (print-error-message exn))))
+      (list #t (with-output-to-port stdout
+                 (lambda ()
+                   (with-error-output-to-port stderr
+                     (lambda ()
+                       (eval (with-input-from-string form read))))))
+            (get-output-string stdout)
+            (get-output-string stderr)))))
 
 (define (eval-form ctx reply-socket msg)
   (let* ((content (jupyter-msg-content msg))
          (silent? (alist-ref 'silent content))
-         (result (safe-eval (alist-ref 'code content))))
+         (result (safe-eval (alist-ref 'code content)))
+         (success? (car result)))
     (send-message/multi reply-socket
       (serialize-wire-msg ctx
         (make-jupyter-msg* msg "execute_reply"
           ; let's report the execution status only
-          `((status . ,(if (car result) "ok" "error"))
+          `((status . ,(if success? "ok" "error"))
             (execution_count . ,+exe-counter+)))))
     ; publish the result on the IOPub channel unless asked to do otherwise
     (unless silent?
       (send-message/multi (context-iopub-socket ctx)
         (serialize-wire-msg ctx
-          (if (car result)
+          (if success?
             (make-jupyter-msg* msg "execute_result"
               `((execution_count . ,+exe-counter+)
                 (metadata . ())
@@ -151,8 +162,24 @@
             (make-jupyter-msg* msg "error"
               `((ename . "exception")
                 (evalue . ,(cadr result))
-                (traceback . #("error during the evaluation")))))))
-      (set! +exe-counter+ (add1 +exe-counter+)))))
+                (traceback . #(,(cadr result))))))))
+      (set! +exe-counter+ (add1 +exe-counter+)))
+      ; send back the stdout/stderr contents
+      (and-let* ((success?)
+                 (stdout-text (caddr result))
+                 (stderr-text (cadddr result)))
+        (unless (string-null? stdout-text)
+          (send-message/multi (context-iopub-socket ctx)
+            (serialize-wire-msg ctx
+              (make-jupyter-msg* msg "stream"
+                `((name . "stdout")
+                  (text . ,stdout-text))))))
+        (unless (string-null? stderr-text)
+          (send-message/multi (context-iopub-socket ctx)
+            (serialize-wire-msg ctx
+              (make-jupyter-msg* msg "stream"
+                `((name . "stderr")
+                  (text . ,stdout-text)))))))))
 
 (define (start-shell-thread! ctx which)
   (let* ((msg-socket (case which
