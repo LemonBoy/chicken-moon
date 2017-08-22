@@ -9,7 +9,7 @@
 
 (define (string-null? s) (zero? (##sys#size s)))
 
-(define-record ccontext hb-socket shell-socket ctrl-socket iopub-socket hmac-fn)
+(define-record context hb-socket shell-socket ctrl-socket iopub-socket hmac-fn)
 
 (define (config->alist file)
   (with-input-from-file file read-json))
@@ -45,7 +45,7 @@
       (loop (cdr msg)))))
 
 (define (start-hb-thread! ctx)
-  (let* ((hb-socket (ccontext-hb-socket ctx))
+  (let* ((hb-socket (context-hb-socket ctx))
          (fd (zmq:socket-fd hb-socket)))
     (thread-start!
       (lambda ()
@@ -66,7 +66,7 @@
 (define (parse-wire-msg ctx msg)
   (let-values (((ids rest) (break! (cut string=? "<IDS|MSG>" <>) msg)))
     ; XXX: Don't hash the raw data if present
-    (and-let* ((hmac-fn (ccontext-hmac-fn ctx))
+    (and-let* ((hmac-fn (context-hmac-fn ctx))
                (sign (hmac-fn (apply string-append (cddr rest)))))
       (unless (string=? (string->hex sign) (second rest))
         (error "corrupted message")))
@@ -83,7 +83,7 @@
          (parent  (json->string (jupyter-msg-parent msg)))
          (meta    (json->string (jupyter-msg-meta msg)))
          (content (json->string (jupyter-msg-content msg)))
-         (hmac-fn (ccontext-hmac-fn ctx))
+         (hmac-fn (context-hmac-fn ctx))
          (sign    (if hmac-fn
                     (hmac-fn (string-append header parent meta content))
                     "")))
@@ -107,7 +107,7 @@
       content)))
 
 (define (call-with-notification ctx msg thunk)
-  (let ((iopub-socket (ccontext-iopub-socket ctx)))
+  (let ((iopub-socket (context-iopub-socket ctx)))
     ; notify the frontend we're executing the request
     (send-message/multi iopub-socket
       (serialize-wire-msg ctx
@@ -122,8 +122,8 @@
           `((execution_state . "idle")))))))
 
 (define (start-shell-thread! ctx)
-  (let* ((iopub-socket (ccontext-iopub-socket ctx))
-         (shell-socket (ccontext-shell-socket ctx))
+  (let* ((iopub-socket (context-iopub-socket ctx))
+         (shell-socket (context-shell-socket ctx))
          (fd (zmq:socket-fd shell-socket)))
     (thread-start!
       (lambda ()
@@ -180,7 +180,7 @@
     ; bind the sockets
     ; XXX: stdin is missing at the moment
     (let-values (((hb shell ctrl iopub) (punch cfg)))
-      (make-ccontext
+      (make-context
         hb shell ctrl iopub
         ; generate the hmac routine if the key is given
         ; XXX: parse signature_scheme instead of hardcoding SHA256 as digest fn
