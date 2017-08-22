@@ -121,23 +121,26 @@
         (make-jupyter-msg* msg "status"
           `((execution_state . "idle")))))))
 
-(define (start-shell-thread! ctx)
+(define (start-shell-thread! ctx which)
   (let* ((iopub-socket (context-iopub-socket ctx))
-         (shell-socket (context-shell-socket ctx))
-         (fd (zmq:socket-fd shell-socket)))
+         (msg-socket (case which
+                         ((shell) (context-shell-socket ctx))
+                         ((control) (context-ctrl-socket ctx))
+                         (else (error "invalid socket selected" which))))
+         (fd (zmq:socket-fd msg-socket)))
     (thread-start!
       (lambda ()
         (let loop ()
           (thread-wait-for-i/o! fd)
 
-          (let* ((msg (parse-wire-msg ctx (receive-message/multi shell-socket)))
+          (let* ((msg (parse-wire-msg ctx (receive-message/multi msg-socket)))
                  (type (alist-ref 'msg_type (jupyter-msg-header msg))))
             (print "recv msg " type)
 
             (call-with-notification ctx msg
               (lambda ()
                 (when (string=? "kernel_info_request" type)
-                  (send-message/multi shell-socket
+                  (send-message/multi msg-socket
                     (serialize-wire-msg ctx
                       (make-jupyter-msg* msg "kernel_info_reply"
                         `((protocol_version . "5.0")
@@ -152,7 +155,7 @@
                 (when (string=? "shutdown_request" type)
                   ; simply echo back the message content to let the front-end
                   ; know we're ready to die
-                  (send-message/multi shell-socket
+                  (send-message/multi msg-socket
                     (serialize-wire-msg ctx
                       (make-jupyter-msg* msg "shutdown_reply"
                         (jupyter-msg-content msg))))
@@ -160,13 +163,13 @@
                   (exit))
                 (when (string=? "is_complete_request" type)
                   (print "completeness")
-                  (send-message/multi shell-socket
+                  (send-message/multi msg-socket
                     (serialize-wire-msg ctx
                       (make-jupyter-msg* msg "is_complete_reply"
                         `((status . "unknown"))))))
                 (when (string=? "execute_request" type)
                   (print "execute")
-                  (send-message/multi shell-socket
+                  (send-message/multi msg-socket
                     (serialize-wire-msg ctx
                       (make-jupyter-msg* msg "execute_reply"
                         `((status . "ok")
@@ -189,7 +192,8 @@
 ; XXX: handle signals?
 (let ((ctx (make-context! (car (command-line-arguments)))))
   (start-hb-thread! ctx)
-  (start-shell-thread! ctx)
+  (start-shell-thread! ctx 'shell)
+  (start-shell-thread! ctx 'control)
   (print "loop...")
   (thread-suspend! (current-thread)))
 )
