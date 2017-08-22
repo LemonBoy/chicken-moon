@@ -2,7 +2,7 @@
   ()
   (import scheme chicken)
 
-(use srfi-1 srfi-18 data-structures ports
+(use srfi-1 srfi-18 data-structures ports posix
      medea uuid matchable
      (prefix zmq zmq:)
      sha2 hmac string-utils)
@@ -14,8 +14,8 @@
 (define (config->alist file)
   (with-input-from-file file read-json))
 
-(define (time->iso8601 time)
-  "YYYY-MM-DDTHH:MM:SS.mmmmmm")
+(define (seconds->iso8601 #!optional (time (current-seconds)))
+  (time->string (seconds->utc-time time) "%FT%TZ"))
 
 (define (endpoint-address ep cfg)
   (string-append
@@ -99,7 +99,7 @@
       `((session  . ,(alist-ref 'session rhdr))
         (username . ,(alist-ref 'username rhdr))
         (version  . ,(alist-ref 'version rhdr))
-        (date     . ,(time->iso8601 #f))
+        (date     . ,(seconds->iso8601))
         (msg_id   . ,(uuid-v4))
         (msg_type . ,type))
       rhdr
