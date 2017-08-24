@@ -164,22 +164,22 @@
                 (evalue . ,(cadr result))
                 (traceback . #(,(cadr result))))))))
       (set! +exe-counter+ (add1 +exe-counter+)))
-      ; send back the stdout/stderr contents
-      (and-let* ((success?)
-                 (stdout-text (caddr result))
-                 (stderr-text (cadddr result)))
-        (unless (string-null? stdout-text)
-          (send-message/multi (context-iopub-socket ctx)
-            (serialize-wire-msg ctx
-              (make-jupyter-msg* msg "stream"
-                `((name . "stdout")
-                  (text . ,stdout-text))))))
-        (unless (string-null? stderr-text)
-          (send-message/multi (context-iopub-socket ctx)
-            (serialize-wire-msg ctx
-              (make-jupyter-msg* msg "stream"
-                `((name . "stderr")
-                  (text . ,stdout-text)))))))))
+    ; send back the stdout/stderr contents
+    (and-let* ((success?)
+               (stdout-text (caddr result))
+               (stderr-text (cadddr result)))
+      (unless (string-null? stdout-text)
+        (send-message/multi (context-iopub-socket ctx)
+          (serialize-wire-msg ctx
+            (make-jupyter-msg* msg "stream"
+              `((name . "stdout")
+                (text . ,stdout-text))))))
+      (unless (string-null? stderr-text)
+        (send-message/multi (context-iopub-socket ctx)
+          (serialize-wire-msg ctx
+            (make-jupyter-msg* msg "stream"
+              `((name . "stderr")
+                (text . ,stdout-text)))))))))
 
 (define (start-shell-thread! ctx which)
   (let* ((msg-socket (case which
