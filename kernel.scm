@@ -50,7 +50,7 @@
     (thread-start!
       (lambda ()
         (let loop ()
-          (thread-wait-for-i/o! fd)
+          (thread-wait-for-i/o! fd #:input)
           (zmq:send-message hb-socket (zmq:receive-message* hb-socket))
           (loop))))))
 
@@ -190,7 +190,7 @@
     (thread-start!
       (lambda ()
         (let loop ()
-          (thread-wait-for-i/o! fd)
+          (thread-wait-for-i/o! fd #:input)
 
           (let ((msg (parse-wire-msg ctx (receive-message/multi msg-socket))))
             (call-with-notification ctx msg
