@@ -24,13 +24,11 @@
 
 (define (punch cfg)
   (apply values
-    (map
-      (lambda (ep typ)
-        (let ((s (zmq:make-socket typ)))
-          (zmq:bind-socket s (endpoint-address ep cfg))
-          s))
-      '(hb_port shell_port control_port iopub_port)
-      '(rep xrep xrep pub))))
+    (map (lambda (ep typ)
+           (let ((sock (zmq:make-socket typ)))
+             (zmq:bind-socket sock (endpoint-address ep cfg)) sock))
+         '(hb_port shell_port control_port iopub_port)
+         '(rep     xrep       xrep         pub))))
 
 (define (receive-message/multi socket)
   (let loop ((msg (list (zmq:receive-message* socket))))
@@ -190,8 +188,6 @@
     (thread-start!
       (lambda ()
         (let loop ()
-          (thread-wait-for-i/o! fd #:input)
-
           (let ((msg (parse-wire-msg ctx (receive-message/multi msg-socket))))
             (call-with-notification ctx msg
               (match-lambda
