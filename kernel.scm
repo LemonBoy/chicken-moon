@@ -211,6 +211,7 @@
                    (serialize-wire-msg ctx
                      (make-jupyter-msg* msg "shutdown_reply"
                        (jupyter-msg-content msg))))
+                 (kill-context! ctx)
                  (print "goodbye...")
                  (exit))
                 ("is_complete_request"
@@ -236,6 +237,12 @@
         ; generate the hmac routine if the key is given
         ; XXX: parse signature_scheme instead of hardcoding SHA256 as digest fn
         (and (not (string-null? key)) (hmac key (sha256-primitive)))))))
+
+(define (kill-context! ctx)
+  (zmq:close-socket (context-hb-socket ctx))
+  (zmq:close-socket (context-shell-socket ctx))
+  (zmq:close-socket (context-ctrl-socket ctx))
+  (zmq:close-socket (context-iopub-socket ctx)))
 
 ; XXX: handle signals?
 (let ((ctx (make-context! (car (command-line-arguments)))))
