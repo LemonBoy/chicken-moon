@@ -2,12 +2,10 @@
   ()
   (import scheme chicken)
 
-(use srfi-1 srfi-18 data-structures ports posix
+(use srfi-1 srfi-13 srfi-18 data-structures ports posix
      medea uuid matchable
      (prefix zmq zmq:)
      sha2 hmac string-utils)
-
-(define (string-null? s) (zero? (##sys#size s)))
 
 (define-record context hb-socket shell-socket ctrl-socket iopub-socket hmac-fn)
 
@@ -228,7 +226,10 @@
 
 (define (make-context! config-path)
   (let* ((cfg (config->alist config-path))
+         (scheme (alist-ref 'signature_scheme cfg))
          (key (alist-ref 'key cfg)))
+    (unless (string-suffix? "sha256" scheme)
+      (error "unsupported signature scheme" scheme))
     ; bind the sockets
     ; XXX: stdin is missing at the moment
     (let-values (((hb shell ctrl iopub) (punch cfg)))
