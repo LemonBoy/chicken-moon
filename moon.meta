@@ -1,0 +1,5 @@
+((synopsis        "Jupyter kernel for CHICKEN")
+ (author          "LemonBoy")
+ (license         "MIT")
+ (category        misc)
+ (depends         medea matchable string-utils uuid zmq sha2 hmac))
