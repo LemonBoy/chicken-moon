@@ -5,7 +5,7 @@
 (use srfi-1 srfi-13 srfi-18 data-structures ports posix
      medea uuid matchable
      (prefix zmq zmq:)
-     sha2 hmac string-utils)
+     sha2 hmac)
 
 (define-record context hb-socket shell-socket ctrl-socket iopub-socket hmac-fn)
 
@@ -64,7 +64,7 @@
     ; XXX: Don't hash the raw data if present
     (and-let* ((hmac-fn (context-hmac-fn ctx))
                (sign (hmac-fn (apply string-append (cddr rest)))))
-      (unless (string=? (string->hex sign) (second rest))
+      (unless (string=? sign (second rest))
         (error "corrupted message")))
 
     (make-jupyter-msg
@@ -83,10 +83,7 @@
          (sign    (if hmac-fn
                     (hmac-fn (string-append header parent meta content))
                     "")))
-    `(,@(jupyter-msg-ids msg)
-       "<IDS|MSG>"
-       ,(string->hex sign)
-       ,header ,parent ,meta ,content)))
+    `(,@(jupyter-msg-ids msg) "<IDS|MSG>" ,sign ,header ,parent ,meta ,content)))
 
 (define (make-jupyter-msg* reply-to type content)
   (let ((rhdr (jupyter-msg-header reply-to)))
@@ -237,7 +234,7 @@
         hb shell ctrl iopub
         ; generate the hmac routine if the key is given
         ; XXX: parse signature_scheme instead of hardcoding SHA256 as digest fn
-        (and (not (string-null? key)) (hmac key (sha256-primitive)))))))
+        (and (not (string-null? key)) (hmac key (sha256-primitive) 'hex))))))
 
 (define (kill-context! ctx)
   (zmq:close-socket (context-hb-socket ctx))

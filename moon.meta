@@ -2,4 +2,4 @@
  (author          "LemonBoy")
  (license         "MIT")
  (category        misc)
- (depends         medea matchable string-utils uuid zmq sha2 hmac))
+ (depends         medea matchable uuid zmq sha2 hmac))
